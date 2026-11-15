@@ -8,8 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_PATH="${1:-${TMPDIR:-/tmp}/latest_backup.tar.gz.enc}"
 
-if [ -z "${GDRIVE_CREDENTIALS_JSON:-}" ]; then
-    echo "ℹ GDRIVE_CREDENTIALS_JSON is not configured. Clean startup without previous cloud restore."
+if [ -z "${GDRIVE_CREDENTIALS_JSON:-}" ] && [ -z "${RCLONE_CONFIG_B64:-}" ]; then
+    echo "ℹ Neither GDRIVE_CREDENTIALS_JSON nor RCLONE_CONFIG_B64 is configured. Clean startup without previous cloud restore."
     exit 0
 fi
 

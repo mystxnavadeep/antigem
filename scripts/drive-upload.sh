@@ -19,8 +19,8 @@ if [ ! -f "$ARCHIVE_PATH" ]; then
     exit 1
 fi
 
-if [ -z "${GDRIVE_CREDENTIALS_JSON:-}" ]; then
-    echo "⚠️ Warning: GDRIVE_CREDENTIALS_JSON secret is not set. Google Drive upload skipped."
+if [ -z "${GDRIVE_CREDENTIALS_JSON:-}" ] && [ -z "${RCLONE_CONFIG_B64:-}" ]; then
+    echo "⚠️ Warning: Neither GDRIVE_CREDENTIALS_JSON nor RCLONE_CONFIG_B64 is set. Google Drive upload skipped."
     exit 0
 fi
 

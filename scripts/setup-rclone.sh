@@ -25,22 +25,23 @@ if ! command -v rclone >/dev/null 2>&1; then
 fi
 
 # 2. Check for credentials
-if [ -z "${GDRIVE_CREDENTIALS_JSON:-}" ]; then
-    echo "  ℹ GDRIVE_CREDENTIALS_JSON is not set. Cloud storage synchronization disabled."
-    exit 0
-fi
+if [ -n "${RCLONE_CONFIG_B64:-}" ]; then
+    mkdir -p "$RCLONE_CONFIG_DIR"
+    echo "$RCLONE_CONFIG_B64" | base64 -d > "$RCLONE_CONF"
+    chmod 600 "$RCLONE_CONF"
+    echo "  ✔ Rclone configuration restored from RCLONE_CONFIG_B64."
+elif [ -n "${GDRIVE_CREDENTIALS_JSON:-}" ]; then
+    # 3. Create rclone configuration from JSON
+    mkdir -p "$RCLONE_CONFIG_DIR"
+    chmod 700 "$RCLONE_CONFIG_DIR"
 
-# 3. Create rclone configuration
-mkdir -p "$RCLONE_CONFIG_DIR"
-chmod 700 "$RCLONE_CONFIG_DIR"
+    FOLDER_ID_LINE=""
+    if [ -n "${GDRIVE_FOLDER_ID:-}" ]; then
+        FOLDER_ID_LINE="root_folder_id = ${GDRIVE_FOLDER_ID}"
+    fi
 
-FOLDER_ID_LINE=""
-if [ -n "${GDRIVE_FOLDER_ID:-}" ]; then
-    FOLDER_ID_LINE="root_folder_id = ${GDRIVE_FOLDER_ID}"
-fi
-
-# Detect whether credentials are a Service Account or OAuth Token
-if echo "$GDRIVE_CREDENTIALS_JSON" | grep -q '"type": *"service_account"'; then
+    # Detect whether credentials are a Service Account or OAuth Token
+    if echo "$GDRIVE_CREDENTIALS_JSON" | grep -q '"type": *"service_account"'; then
     # Compact JSON to single-line safely without logging
     COMPACT_CREDS="$(echo "$GDRIVE_CREDENTIALS_JSON" | tr -d '\r\n')"
     cat <<EOF > "$RCLONE_CONF"
@@ -59,9 +60,12 @@ scope = drive
 token = $GDRIVE_CREDENTIALS_JSON
 $FOLDER_ID_LINE
 EOF
+    fi
+    chmod 600 "$RCLONE_CONF"
+else
+    echo "  ℹ Neither RCLONE_CONFIG_B64 nor GDRIVE_CREDENTIALS_JSON is set. Cloud storage synchronization disabled."
+    exit 0
 fi
-
-chmod 600 "$RCLONE_CONF"
 
 # 4. Verify rclone can reach Drive
 if rclone lsd gdrive: >/dev/null 2>&1; then
