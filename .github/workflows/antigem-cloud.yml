@@ -29,6 +29,8 @@ jobs:
       GDRIVE_CREDENTIALS_JSON: ${{ secrets.GDRIVE_CREDENTIALS_JSON }}
       RCLONE_CONFIG_B64: ${{ secrets.RCLONE_CONFIG_B64 }}
       BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+      SECURITY_TOKEN: ${{ secrets.SECURITY_TOKEN }}
+      SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
       DEBIAN_FRONTEND: noninteractive
 
     steps:
@@ -56,7 +58,7 @@ jobs:
       - name: Install System Prerequisites & Rclone
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq openssh-server tmux curl jq openssl tar gzip rclone
+          sudo apt-get install -y -qq openssh-server tmux curl jq openssl tar gzip rclone socat
           chmod +x scripts/setup-rclone.sh
           ./scripts/setup-rclone.sh
 
@@ -71,6 +73,15 @@ jobs:
           TAILSCALE_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=${TAILSCALE_IP}" >> $GITHUB_ENV
           echo "  ✔ Runner Tailscale IPv4: ${TAILSCALE_IP}"
+
+      - name: Install Google Antigravity CLI (agy)
+        run: |
+          mkdir -p $HOME/.local/bin
+          echo "Installing Google Antigravity CLI..."
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.gemini/bin" >> $GITHUB_PATH
+          $HOME/.local/bin/agy --version || true
 
       - name: Configure OpenSSH Server
         run: |
@@ -91,31 +102,35 @@ jobs:
       - name: Display Connection Info for Android APK
         run: |
           TOKEN="$(cat $HOME/.antigem_bridge/csrf_token.txt | tr -d '[:space:]')"
+          SSH_PASS="${SSH_PASSWORD:-antigemcloud1}"
           echo "============================================================"
           echo "  📱 ANTIGEM ANDROID APK CONNECTION CONFIGURATION"
           echo "============================================================"
-          echo "  In antiGem Android App -> Settings -> Servers & Connectivity:"
-          echo "  • Mode:              Remote"
+          echo "  Option 1: Direct Mode (Server mode in APK Settings):"
           echo "  • IDE Bridge URL:    http://${TAILSCALE_IP}:1234"
           echo "  • AGY Hub URL:       http://${TAILSCALE_IP}:1235"
+          echo "  • Security Token:    ${TOKEN}"
+          echo "  • Proxy Header:      (Leave Empty)"
+          echo "------------------------------------------------------------"
+          echo "  Option 2: SSH Tunnel Mode (SSH mode in APK Settings):"
           echo "  • SSH Host:          ${TAILSCALE_IP}"
           echo "  • SSH Port:          22"
           echo "  • SSH Username:      runner"
+          echo "  • SSH Password:      ${SSH_PASS}"
           echo "  • Security Token:    ${TOKEN}"
-          echo "  • Proxy Header:      (Leave Empty)"
           echo "============================================================"
           
           # Summary for GitHub Actions Web UI
           echo "### 📱 antiGem Android APK Connection Details" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Mode** | Remote |" >> $GITHUB_STEP_SUMMARY
-          echo "| **IDE Bridge URL** | \`http://${TAILSCALE_IP}:1234\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **AGY Hub URL** | \`http://${TAILSCALE_IP}:1235\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **SSH Host** | \`${TAILSCALE_IP}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **SSH Port** | \`22\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **SSH Username** | \`runner\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Security Token** | \`${TOKEN}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Mode** | Server (Direct) | Set in APK Settings -> Servers |" >> $GITHUB_STEP_SUMMARY
+          echo "| **IDE Bridge URL** | \`http://${TAILSCALE_IP}:1234\` | Files, Git, MCP, Terminal |" >> $GITHUB_STEP_SUMMARY
+          echo "| **AGY Hub URL** | \`http://${TAILSCALE_IP}:1235\` | Chat, Models, Agents |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Security Token** | \`${TOKEN}\` | 12-char Security Token |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SSH Host** | \`${TAILSCALE_IP}\` | For SSH Tunnel mode |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SSH Port** | \`22\` | OpenSSH port |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SSH User / Pass** | \`runner\` / \`${SSH_PASS}\` | SSH Credentials |" >> $GITHUB_STEP_SUMMARY
 
       - name: Runtime Supervision & Automatic Backup Loop
         run: |
@@ -148,6 +163,10 @@ jobs:
             if ! curl -s -f http://127.0.0.1:1234/api/health >/dev/null 2>&1; then
               echo "⚠️ [$(date +'%H:%M:%S')] Warning: Bridge health probe failed. Checking process..."
               pgrep -f "agy_ide_bridge" || echo "❌ Bridge process not found!"
+            fi
+            
+            if ! curl -s -m 2 http://127.0.0.1:1235/ >/dev/null 2>&1; then
+              echo "⚠️ [$(date +'%H:%M:%S')] Warning: AGY Hub probe on 1235 failed."
             fi
             
             SINCE_FULL=$((CURRENT_TIME - LAST_FULL_BACKUP))

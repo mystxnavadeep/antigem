@@ -18,6 +18,14 @@ echo "============================================================"
 echo "  ⚡ antiGem Cloud: Starting Services"
 echo "============================================================"
 
+# Detect Tailscale IP if not already exported
+if [ -z "${TAILSCALE_IP:-}" ]; then
+    if command -v tailscale >/dev/null 2>&1; then
+        TAILSCALE_IP="$(tailscale ip -4 2>/dev/null || true)"
+    fi
+fi
+TAILSCALE_IP="${TAILSCALE_IP:-127.0.0.1}"
+
 # 1. Compile agy_ide_bridge binary if not present
 BRIDGE_BIN="$BIN_DIR/agy_ide_bridge"
 if [ ! -f "$BRIDGE_BIN" ]; then
@@ -33,6 +41,8 @@ fi
 
 # 2. Check and locate Antigravity CLI binary
 AGY_BIN=""
+export PATH="$HOME_DIR/.local/bin:$HOME_DIR/.gemini/bin:$PATH"
+
 for candidate in "$HOME_DIR/.local/bin/agy" "$HOME_DIR/.gemini/bin/agy" "/usr/local/bin/agy" "$(command -v agy 2>/dev/null || true)"; do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
         AGY_BIN="$candidate"
@@ -42,9 +52,14 @@ done
 
 if [ -z "$AGY_BIN" ]; then
     echo "  • Installing Google Antigravity CLI (agy)..."
-    curl -fsSL https://antigravity.google/cli/install.sh | bash >/dev/null 2>&1 || true
-    for candidate in "$HOME_DIR/.local/bin/agy" "$HOME_DIR/.gemini/bin/agy"; do
-        if [ -x "$candidate" ]; then
+    mkdir -p "$HOME_DIR/.local/bin"
+    if curl -fsSL https://antigravity.google/cli/install.sh | bash; then
+        echo "    ✔ Antigravity CLI install script finished."
+    else
+        echo "    ⚠️ Antigravity CLI installer returned a non-zero exit code."
+    fi
+    for candidate in "$HOME_DIR/.local/bin/agy" "$HOME_DIR/.gemini/bin/agy" "/usr/local/bin/agy" "$(command -v agy 2>/dev/null || true)"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
             AGY_BIN="$candidate"
             break
         fi
@@ -80,16 +95,20 @@ elif [ -x "$HOME_DIR/.local/bin/codex" ]; then
 fi
 
 # 4. Resolve 12-char Security Token
+# Priority: 1. Explicit env SECURITY_TOKEN (GitHub secret), 2. Restored token file, 3. Standard default 'antigemcloud1'
 TOKEN_FILE="$HOME_DIR/.antigem_bridge/csrf_token.txt"
-if [ -f "$TOKEN_FILE" ]; then
+TOKEN=""
+if [ -n "${SECURITY_TOKEN:-}" ] && [ "${#SECURITY_TOKEN}" -eq 12 ]; then
+    TOKEN="$SECURITY_TOKEN"
+elif [ -f "$TOKEN_FILE" ]; then
     TOKEN="$(cat "$TOKEN_FILE" | tr -d '[:space:]')"
 fi
-if [ -z "${TOKEN:-}" ] || [ "${#TOKEN}" -lt 12 ]; then
-    TOKEN="$(tr -dc 'a-z0-9' < /dev/urandom | head -c 12 || echo 'n6mjyd8v6nzp')"
-    mkdir -p "$(dirname "$TOKEN_FILE")"
-    echo "$TOKEN" > "$TOKEN_FILE"
-    chmod 600 "$TOKEN_FILE"
+if [ -z "${TOKEN:-}" ] || [ "${#TOKEN}" -ne 12 ]; then
+    TOKEN="antigemcloud1"
 fi
+mkdir -p "$(dirname "$TOKEN_FILE")"
+echo "$TOKEN" > "$TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
 
 # 5. Build Bridge Command Arguments
 BRIDGE_ARGS=(
@@ -117,8 +136,27 @@ nohup "$BRIDGE_BIN" "${BRIDGE_ARGS[@]}" >> "$BRIDGE_LOG" 2>&1 &
 BRIDGE_PID=$!
 echo "$BRIDGE_PID" > "$HOME_DIR/.server.pid"
 
-# 7. Wait and Verify Health
-echo "  • Waiting for bridge to become healthy..."
+# 7. Configure Network Forwarding for Hub Port 1235
+# 'agy --hub' listens exclusively on 127.0.0.1:1235.
+# We forward incoming connections from the Tailscale IP on port 1235 to 127.0.0.1:1235.
+if command -v sudo >/dev/null 2>&1; then
+    sudo sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.conf.default.route_localnet=1 >/dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    sudo iptables -t nat -A PREROUTING -p tcp --dport 1235 -j DNAT --to-destination 127.0.0.1:1235 2>/dev/null || true
+fi
+
+# Start socat forwarding proxy on Tailscale IP
+if command -v socat >/dev/null 2>&1; then
+    if [ "$TAILSCALE_IP" != "127.0.0.1" ]; then
+        echo "  • Starting socat forward: ${TAILSCALE_IP}:1235 -> 127.0.0.1:1235..."
+        pkill -f "socat.*1235" 2>/dev/null || true
+        nohup socat TCP-LISTEN:1235,bind="$TAILSCALE_IP",fork,reuseaddr TCP:127.0.0.1:1235 >> "$LOGS_DIR/hub-forward.log" 2>&1 &
+    fi
+fi
+
+# 8. Wait and Verify Health of Bridge (1234) and Hub (1235)
+echo "  • Waiting for Bridge to become healthy on port 1234..."
 UP=false
 for i in {1..30}; do
     if curl -s -f http://127.0.0.1:1234/api/health >/dev/null 2>&1; then
@@ -129,15 +167,45 @@ for i in {1..30}; do
 done
 
 if [ "$UP" = true ]; then
-    echo "    ✔ Bridge is ONLINE and healthy!"
+    echo "    ✔ Bridge is ONLINE on port 1234!"
 else
     echo "    ❌ Error: Bridge did not answer within 30 seconds."
     echo "    Recent log output:"
-    tail -n 20 "$BRIDGE_LOG" 2>/dev/null || true
+    tail -n 25 "$BRIDGE_LOG" 2>/dev/null || true
     exit 1
 fi
 
-# 8. Start Browser Plugin Extension Host if Node.js is present
+echo "  • Waiting for AGY Hub on port 1235..."
+HUB_UP=false
+for i in {1..30}; do
+    if curl -s -m 2 http://127.0.0.1:1235/ >/dev/null 2>&1 || (exec 3<>/dev/tcp/127.0.0.1/1235) 2>/dev/null; then
+        exec 3<&- 2>/dev/null || true
+        exec 3>&- 2>/dev/null || true
+        HUB_UP=true
+        break
+    fi
+    sleep 1
+done
+
+if [ "$HUB_UP" = true ]; then
+    echo "    ✔ AGY Hub is ONLINE on port 1235!"
+else
+    echo "    ⚠️ Warning: AGY Hub not answering on 127.0.0.1:1235 yet."
+fi
+
+# Test Tailscale IP reachability on port 1235
+if [ "$TAILSCALE_IP" != "127.0.0.1" ]; then
+    echo "  • Verifying Tailscale reachability on port 1235..."
+    if curl -s -m 3 "http://${TAILSCALE_IP}:1235/" >/dev/null 2>&1 || (exec 3<>/dev/tcp/${TAILSCALE_IP}/1235) 2>/dev/null; then
+        exec 3<&- 2>/dev/null || true
+        exec 3>&- 2>/dev/null || true
+        echo "    ✔ Tailscale Port 1235 is OPEN and forward is active!"
+    else
+        echo "    ⚠️ Notice: Port 1235 may still be initializing."
+    fi
+fi
+
+# 9. Start Browser Plugin Extension Host if Node.js is present
 if command -v node >/dev/null 2>&1; then
     EXT_HOST_FILE="$PROJECT_ROOT/app/src/main/assets/browser-runtime/extension-host.mjs"
     if [ -f "$EXT_HOST_FILE" ]; then
@@ -153,14 +221,13 @@ if command -v node >/dev/null 2>&1; then
     fi
 fi
 
-TAILSCALE_IP_DISPLAY="${TAILSCALE_IP:-127.0.0.1}"
 echo ""
 echo "============================================================"
 echo "  🎉 antiGem Services are LIVE!"
 echo "============================================================"
-echo "  • IDE Bridge URL:  http://${TAILSCALE_IP_DISPLAY}:1234"
-echo "  • AGY Hub URL:     http://${TAILSCALE_IP_DISPLAY}:1235"
-echo "  • SSH Server:      ${TAILSCALE_IP_DISPLAY}:22"
+echo "  • IDE Bridge URL:  http://${TAILSCALE_IP}:1234"
+echo "  • AGY Hub URL:     http://${TAILSCALE_IP}:1235"
+echo "  • SSH Server:      ${TAILSCALE_IP}:22"
 echo "  • SSH User:        $CURRENT_USER"
 echo "  • Security Token:  $TOKEN"
 echo "============================================================"

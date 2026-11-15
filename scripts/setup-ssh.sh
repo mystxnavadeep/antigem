@@ -33,6 +33,12 @@ chmod 700 "$SSH_DIR"
 touch "$SSH_DIR/authorized_keys"
 chmod 600 "$SSH_DIR/authorized_keys"
 
+# Support external public key from secret if provided
+if [ -n "${SSH_AUTHORIZED_KEY:-}" ]; then
+    echo "$SSH_AUTHORIZED_KEY" >> "$SSH_DIR/authorized_keys"
+    echo "  • User-provided SSH public key added to authorized_keys."
+fi
+
 # 3. Check for existing keypair or generate a persistent one
 KEY_FILE="$SSH_DIR/antigem_ed25519"
 if [ ! -f "$KEY_FILE" ]; then
@@ -42,11 +48,15 @@ if [ ! -f "$KEY_FILE" ]; then
     chmod 644 "$KEY_FILE.pub"
 fi
 
-# Ensure public key is authorized
 PUB_KEY="$(cat "$KEY_FILE.pub")"
 if ! grep -qF "$PUB_KEY" "$SSH_DIR/authorized_keys" 2>/dev/null; then
     echo "$PUB_KEY" >> "$SSH_DIR/authorized_keys"
-    echo "  • Key added to authorized_keys."
+fi
+
+# Set password for runner user so password authentication works if needed
+SSH_PASS="${SSH_PASSWORD:-antigemcloud1}"
+if command -v sudo >/dev/null 2>&1; then
+    echo "$CURRENT_USER:$SSH_PASS" | sudo chpasswd 2>/dev/null || true
 fi
 
 # 4. Configure sshd daemon safely
@@ -55,8 +65,8 @@ CONFIG_FILE="$SSHD_CONFIG_DIR/99-antigem.conf"
 
 CONFIG_CONTENT="Port $SSH_PORT
 PubkeyAuthentication yes
-PasswordAuthentication no
-KbdInteractiveAuthentication no
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
 PermitRootLogin prohibit-password
 AllowTcpForwarding yes
 GatewayPorts yes
