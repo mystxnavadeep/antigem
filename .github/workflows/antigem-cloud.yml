@@ -1,0 +1,163 @@
+name: AntiGem Cloud Workspace
+
+on:
+  workflow_dispatch:
+    inputs:
+      restore_from_backup:
+        description: 'Restore previous workspace from Google Drive'
+        required: false
+        default: true
+        type: boolean
+      max_duration_hours:
+        description: 'Maximum runtime in hours (max 5.8)'
+        required: false
+        default: '5.8'
+
+# Ensure only one instance of the cloud runner is active at a time to prevent state conflicts
+concurrency:
+  group: antigem-cloud-workspace
+  cancel-in-progress: false
+
+jobs:
+  antigem-runner:
+    name: AntiGem Cloud Runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 355 # Hard GitHub timeout safeguard slightly above the 350m (5h50m) graceful loop
+
+    env:
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      GDRIVE_CREDENTIALS_JSON: ${{ secrets.GDRIVE_CREDENTIALS_JSON }}
+      BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Checkout antiGem Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Go 1.23+
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: Set up Node.js 20+
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python 3 & Dependencies
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install System Prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server tmux curl jq openssl tar gzip
+          pip install --quiet google-api-python-client google-auth google-auth-oauthlib
+
+      - name: Connect to Tailscale (Auth Key Only)
+        run: |
+          chmod +x scripts/setup-tailscale.sh
+          ./scripts/setup-tailscale.sh
+
+      - name: Configure OpenSSH Server
+        run: |
+          chmod +x scripts/setup-ssh.sh
+          ./scripts/setup-ssh.sh
+
+      - name: Restore Workspace from Google Drive
+        if: ${{ inputs.restore_from_backup != false }}
+        run: |
+          chmod +x scripts/restore.sh scripts/drive-download.sh scripts/verify-backup.sh
+          ./scripts/restore.sh
+
+      - name: Start AntiGem Services (IDE Bridge + AGY Hub)
+        run: |
+          chmod +x scripts/start-antigem.sh
+          ./scripts/start-antigem.sh
+
+      - name: Display Connection Info for Android APK
+        run: |
+          TOKEN="$(cat $HOME/.antigem_bridge/csrf_token.txt | tr -d '[:space:]')"
+          echo "============================================================"
+          echo "  📱 ANTIGEM ANDROID APK CONNECTION CONFIGURATION"
+          echo "============================================================"
+          echo "  In antiGem Android App -> Settings -> Servers & Connectivity:"
+          echo "  • Mode:              Remote"
+          echo "  • IDE Bridge URL:    http://${TAILSCALE_IP}:1234"
+          echo "  • AGY Hub URL:       http://${TAILSCALE_IP}:1235"
+          echo "  • SSH Host:          ${TAILSCALE_IP}"
+          echo "  • SSH Port:          22"
+          echo "  • SSH Username:      runner"
+          echo "  • Security Token:    ${TOKEN}"
+          echo "  • Proxy Header:      (Leave Empty)"
+          echo "============================================================"
+          
+          # Summary for GitHub Actions Web UI
+          echo "### 📱 antiGem Android APK Connection Details" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Mode** | Remote |" >> $GITHUB_STEP_SUMMARY
+          echo "| **IDE Bridge URL** | \`http://${TAILSCALE_IP}:1234\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **AGY Hub URL** | \`http://${TAILSCALE_IP}:1235\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SSH Host** | \`${TAILSCALE_IP}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SSH Port** | \`22\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SSH Username** | \`runner\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Security Token** | \`${TOKEN}\` |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Runtime Supervision & Automatic Backup Loop
+        run: |
+          chmod +x scripts/backup.sh scripts/drive-upload.sh
+          
+          START_TIME=$(date +%s)
+          # 350 minutes = 21,000 seconds (5 hours 50 minutes)
+          MAX_RUNTIME_SEC=21000
+          INTERVAL_SEC=300 # 5 minutes
+          
+          echo "🚀 antiGem Cloud Workspace is now actively running."
+          echo "• Scheduled duration: 5 hours 50 minutes"
+          echo "• Incremental backup interval: Every 5 minutes"
+          echo "• Full backup interval: Every 30 minutes"
+          
+          LAST_FULL_BACKUP=$START_TIME
+          
+          while true; do
+            sleep "$INTERVAL_SEC"
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            
+            # Check for scheduled termination threshold (5h 50m)
+            if [ "$ELAPSED" -ge "$MAX_RUNTIME_SEC" ]; then
+              echo "⏰ 5 hours 50 minutes reached. Initiating final backup sequence..."
+              break
+            fi
+            
+            # Health check on services
+            if ! curl -s -f http://127.0.0.1:1234/api/health >/dev/null 2>&1; then
+              echo "⚠️ [$(date +'%H:%M:%S')] Warning: Bridge health probe failed. Checking process..."
+              pgrep -f "agy_ide_bridge" || echo "❌ Bridge process not found!"
+            fi
+            
+            SINCE_FULL=$((CURRENT_TIME - LAST_FULL_BACKUP))
+            if [ "$SINCE_FULL" -ge 1800 ]; then
+              echo "🔄 [$(date +'%H:%M:%S')] Executing 30-minute scheduled FULL backup..."
+              ./scripts/backup.sh full upload || echo "⚠️ Full backup encountered an issue."
+              LAST_FULL_BACKUP=$(date +%s)
+            else
+              echo "🔄 [$(date +'%H:%M:%S')] Executing 5-minute scheduled INCREMENTAL backup..."
+              ./scripts/backup.sh inc upload || echo "⚠️ Incremental backup encountered an issue."
+            fi
+          done
+
+      - name: Execute Final Full Backup
+        if: always()
+        run: |
+          echo "============================================================"
+          echo "  📦 Creating Final Verified Backup before runner exits"
+          echo "============================================================"
+          chmod +x scripts/backup.sh scripts/drive-upload.sh scripts/verify-backup.sh
+          ./scripts/backup.sh full upload
+          echo "  ✅ Final backup uploaded and verified."

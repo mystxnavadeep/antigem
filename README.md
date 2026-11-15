@@ -391,6 +391,44 @@ The Backups & Restore screen is for the phone's own data and is hidden in Server
 
 ---
 
+## ☁️ antiGem Cloud Workspace (GitHub Actions + Tailscale + Google Drive)
+
+Run a persistent, recoverable antiGem cloud workspace directly on **GitHub Actions** with zero VPS hosting costs, private **Tailscale** zero-trust networking, and automatic encrypted **Google Drive** backups.
+
+### Features
+- **Zero Cost Hosting**: Runs on GitHub-hosted Ubuntu runners (`ubuntu-latest`).
+- **Private Zero-Trust Network**: Connected directly to your phone via Tailscale Auth Key (`TAILSCALE_AUTH_KEY`). No public ports or reverse proxies needed.
+- **Automated Cloud Backup & Recovery**:
+  - Automatically restores previous workspace upon runner startup from Google Drive.
+  - **Every 5 minutes**: Incremental encrypted snapshot.
+  - **Every 30 minutes**: Full encrypted workspace backup.
+  - **At 5h50m**: Final full backup before the runner hits the 6-hour limit.
+- **Full Android APK Compatibility**: Connects seamlessly with the existing antiGem Android app in **Remote** mode.
+- **Enterprise Grade Security**: Encrypted with AES-256-CBC (PBKDF2) and SHA-256 integrity verification. Credentials and tokens are strictly kept in GitHub Secrets and never exposed in logs.
+
+### Required GitHub Secrets
+1. `TAILSCALE_AUTH_KEY`: Pre-authorized, reusable Tailscale auth key (no OAuth client ID needed).
+2. `GDRIVE_CREDENTIALS_JSON`: Google Drive Service Account JSON key.
+3. `BACKUP_ENCRYPTION_KEY`: Strong passphrase used to encrypt/decrypt backups.
+
+### Quick Start
+1. Fork or push this repository to your GitHub account.
+2. Add the three repository secrets in **Settings → Secrets and variables → Actions**.
+3. Go to **Actions → AntiGem Cloud Workspace → Run workflow**.
+4. Once the workflow starts, view the step **Display Connection Info for Android APK**.
+5. In your antiGem Android app (**Settings → Servers & Connectivity**):
+   - Set Mode to **Remote**.
+   - Enter the displayed **IDE Bridge URL** (`http://<TAILSCALE_IP>:1234`), **AGY Hub URL** (`http://<TAILSCALE_IP>:1235`), and **Security Token**.
+   - Tap **Save Settings** and connect!
+
+See detailed guides:
+- [Tailscale Setup Guide](docs/TAILSCALE_SETUP.md)
+- [Backup & Recovery Guide](docs/BACKUP_RECOVERY.md)
+- [Android APK Connectivity Guide](docs/ANDROID_APK_CONNECTIVITY.md)
+- [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+
+---
+
 ## Building from source
 
 **Requirements:** JDK 17+, Android SDK (API 35, Build Tools 35+) and Go 1.23+ for the bridge.
