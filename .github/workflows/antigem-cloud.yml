@@ -16,7 +16,7 @@ on:
 # Ensure only one instance of the cloud runner is active at a time to prevent state conflicts
 concurrency:
   group: antigem-cloud-workspace
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   antigem-runner:
