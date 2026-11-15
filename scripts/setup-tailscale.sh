@@ -22,26 +22,28 @@ if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1
 fi
 
-# Ensure tailscaled daemon is active
+# Ensure tailscaled daemon is active with required directories
+SUDO_CMD=""
+if command -v sudo >/dev/null 2>&1; then
+    SUDO_CMD="sudo"
+fi
+
+$SUDO_CMD mkdir -p /var/lib/tailscale /run/tailscale
 if ! pgrep -x tailscaled >/dev/null 2>&1; then
     echo "  • Starting tailscaled daemon..."
-    if command -v sudo >/dev/null 2>&1; then
-        sudo tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock >/dev/null 2>&1 &
-    else
-        tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock >/dev/null 2>&1 &
-    fi
+    $SUDO_CMD systemctl start tailscaled 2>/dev/null || \
+    $SUDO_CMD service tailscaled start 2>/dev/null || \
+    $SUDO_CMD tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock >/dev/null 2>&1 &
     sleep 3
 fi
 
 # Build arguments for tailscale up
-# Uses --ephemeral so runner nodes are automatically removed upon termination
-HOSTNAME="${TAILSCALE_HOSTNAME:-antigem-cloud-$(cat /etc/hostname 2>/dev/null || echo runner)}"
+HOSTNAME="${TAILSCALE_HOSTNAME:-antigem-cloud-runner}"
 UP_ARGS=(
     "--authkey=${TAILSCALE_AUTH_KEY}"
     "--hostname=${HOSTNAME}"
     "--accept-routes"
     "--accept-dns=false"
-    "--ephemeral=true"
 )
 
 # Optional tags if user configured TAILSCALE_TAGS
@@ -51,18 +53,16 @@ fi
 
 echo "  • Connecting node to Tailnet..."
 # Run tailscale up without leaking authkey to output
-SUDO_CMD=""
-if command -v sudo >/dev/null 2>&1; then
-    SUDO_CMD="sudo"
-fi
+set +e
+TS_OUTPUT=$($SUDO_CMD tailscale up "${UP_ARGS[@]}" 2>&1)
+TS_EXIT=$?
+set -e
 
-set +x
-$SUDO_CMD tailscale up "${UP_ARGS[@]}" >/dev/null 2>&1 || {
-    # If ephemeral flag fails (e.g. tag-enforced auth key without ephemeral permitted), retry without --ephemeral
-    echo "  ℹ Retrying without --ephemeral flag..."
-    RETRY_ARGS=("${UP_ARGS[@]/--ephemeral=true/}")
-    $SUDO_CMD tailscale up "${RETRY_ARGS[@]}" >/dev/null 2>&1
-}
+if [ $TS_EXIT -ne 0 ]; then
+    CLEAN_ERR=$(echo "$TS_OUTPUT" | sed "s/${TAILSCALE_AUTH_KEY}/[REDACTED]/g")
+    echo "  ❌ Tailscale connection failed: $CLEAN_ERR"
+    exit 1
+fi
 
 # Verify connectivity and retrieve IP
 TAILSCALE_IP="$($SUDO_CMD tailscale ip -4 2>/dev/null || true)"

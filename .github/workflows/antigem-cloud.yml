@@ -61,9 +61,16 @@ jobs:
           ./scripts/setup-rclone.sh
 
       - name: Connect to Tailscale (Auth Key Only)
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          args: --accept-routes --hostname=antigem-cloud-runner
+
+      - name: Verify Tailscale & Get IP
         run: |
-          chmod +x scripts/setup-tailscale.sh
-          ./scripts/setup-tailscale.sh
+          TAILSCALE_IP=$(tailscale ip -4)
+          echo "TAILSCALE_IP=${TAILSCALE_IP}" >> $GITHUB_ENV
+          echo "  ✔ Runner Tailscale IPv4: ${TAILSCALE_IP}"
 
       - name: Configure OpenSSH Server
         run: |
