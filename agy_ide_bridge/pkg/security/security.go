@@ -375,17 +375,27 @@ type failureEntry struct {
 }
 
 const (
-	maxAuthFailures = 30
-	failureWindow   = 5 * time.Minute
-	blockDuration   = 5 * time.Minute
+	maxAuthFailures = 500
+	failureWindow   = 1 * time.Minute
+	blockDuration   = 10 * time.Second
 )
 
 var authFailures = &failureLimiter{entries: make(map[string]*failureEntry)}
 
-func (l *failureLimiter) blocked(ip string) bool {
+func (l *failureLimiter) blocked(ipStr string) bool {
+	if parsed := net.ParseIP(ipStr); parsed != nil {
+		if parsed.IsLoopback() || parsed.IsPrivate() {
+			return false
+		}
+		// Tailscale peer address space: 100.64.0.0/10
+		_, tsNet, _ := net.ParseCIDR("100.64.0.0/10")
+		if tsNet != nil && tsNet.Contains(parsed) {
+			return false
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := l.entries[ip]
+	e := l.entries[ipStr]
 	return e != nil && time.Now().Before(e.until)
 }
 

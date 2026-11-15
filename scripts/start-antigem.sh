@@ -104,7 +104,7 @@ elif [ -f "$TOKEN_FILE" ]; then
     TOKEN="$(cat "$TOKEN_FILE" | tr -d '[:space:]')"
 fi
 if [ -z "${TOKEN:-}" ] || [ "${#TOKEN}" -ne 12 ]; then
-    TOKEN="antigemcloud1"
+    TOKEN="antigemcloud"
 fi
 mkdir -p "$(dirname "$TOKEN_FILE")"
 echo "$TOKEN" > "$TOKEN_FILE"
