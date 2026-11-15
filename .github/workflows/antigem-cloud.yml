@@ -52,11 +52,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install System Prerequisites
+      - name: Install System Prerequisites & Rclone
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq openssh-server tmux curl jq openssl tar gzip
-          pip install --quiet google-api-python-client google-auth google-auth-oauthlib
+          sudo apt-get install -y -qq openssh-server tmux curl jq openssl tar gzip rclone
+          chmod +x scripts/setup-rclone.sh
+          ./scripts/setup-rclone.sh
 
       - name: Connect to Tailscale (Auth Key Only)
         run: |

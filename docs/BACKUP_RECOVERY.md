@@ -55,6 +55,7 @@ The following directories and state files are included in the backup:
   ./scripts/verify-backup.sh "$ARCHIVE.enc"
   ```
 - **No Plaintext Leaks**: Encryption keys and Google Drive credentials are read strictly from environment variables and GitHub Secrets (`BACKUP_ENCRYPTION_KEY`, `GDRIVE_CREDENTIALS_JSON`). They are never printed to terminal or workflow logs.
+- **Rclone Transfer Engine**: Backup archives are synchronized to Google Drive using **Rclone** (`scripts/drive-upload.sh` and `scripts/drive-download.sh`) with multi-threaded transfers (`--transfers 4 --drive-chunk-size 64M`) and automatic retries.
 
 ---
 
